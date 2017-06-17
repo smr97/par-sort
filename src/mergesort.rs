@@ -347,7 +347,7 @@ where
         {
             let (left, right) = v.split_at_mut(len / 2);
             let buf_left = buf as usize;
-            let buf_right = unsafe { buf.offset(len as isize / 2) } as usize;
+            let buf_right = unsafe { buf.offset(len as isize / 4) } as usize;
 
             rayon::join(
                 || recurse(left, buf_left as *mut T, is_less),
@@ -393,4 +393,35 @@ where
     let mut buf = Vec::with_capacity(len / 2);
 
     recurse(v, buf.as_mut_ptr(), &is_less);
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate rand;
+
+    use super::sort;
+    use self::rand::{thread_rng, Rng};
+
+    #[test]
+    fn test() {
+        let mut rng = thread_rng();
+        for _ in 0..1000 {
+            let len = rng.gen::<usize>() % 10000 + 1;
+            let limit = rng.gen::<u64>() % 10000 + 1;
+
+            let mut a = rng.gen_iter::<u64>()
+                .map(|x| x % limit)
+                .take(len)
+                .enumerate()
+                .map(|(i, x)| (x, i))
+                .collect::<Vec<_>>();
+
+            let mut b = a.clone();
+
+            a.sort_by_key(|&(k, _)| k);
+            sort(&mut b, |&(x, _), &(y, _)| x.lt(&y));
+
+            assert_eq!(a, b);
+        }
+    }
 }
