@@ -7,9 +7,9 @@ use rayon;
 /// Inserts `v[0]` into pre-sorted sequence `v[1..]` so that whole `v[..]` becomes sorted.
 ///
 /// This is the integral subroutine of insertion sort.
-fn insert_head<T, F>(v: &mut [T], is_less: &mut F)
+fn insert_head<T, F>(v: &mut [T], is_less: &F)
 where
-    F: FnMut(&T, &T) -> bool,
+    F: Fn(&T, &T) -> bool,
 {
     if v.len() >= 2 && is_less(&v[1], &v[0]) {
         unsafe {
@@ -92,14 +92,18 @@ where
 ///
 /// The two slices must be non-empty and `mid` must be in bounds. Buffer `buf` must be long enough
 /// to hold a copy of the shorter slice. Also, `T` must not be a zero-sized type.
-unsafe fn merge<T, F>(v: &mut [T], mid: usize, buf: *mut T, is_less: &mut F)
+unsafe fn merge<T, F>(v: &mut [T], mid: usize, buf: *mut T, is_less: &F)
 where
-    F: FnMut(&T, &T) -> bool,
+    F: Fn(&T, &T) -> bool,
 {
     let len = v.len();
     let v = v.as_mut_ptr();
     let v_mid = v.offset(mid as isize);
     let v_end = v.offset(len as isize);
+
+    if !is_less(&*v_mid, &*v_mid.offset(-1)) {
+        return;
+    }
 
     // The merge process first copies the shorter run into `buf`. Then it traces the newly copied
     // run and the longer run forwards (or backwards), comparing their next unconsumed elements and
@@ -134,18 +138,15 @@ where
         let mut right = v_mid;
         let out = &mut hole.dest;
 
-        if is_less(&*v_mid, &*v_mid.offset(-1)) {
-            // TODO: use this in other branch as well
-            while *left < hole.end && right < v_end {
-                // Consume the lesser side.
-                // If equal, prefer the left run to maintain stability.
-                let to_copy = if is_less(&*right, &**left) {
-                    get_and_increment(&mut right)
-                } else {
-                    get_and_increment(left)
-                };
-                ptr::copy_nonoverlapping(to_copy, get_and_increment(out), 1);
-            }
+        while *left < hole.end && right < v_end {
+            // Consume the lesser side.
+            // If equal, prefer the left run to maintain stability.
+            let to_copy = if is_less(&*right, &**left) {
+                get_and_increment(&mut right)
+            } else {
+                get_and_increment(left)
+            };
+            ptr::copy_nonoverlapping(to_copy, get_and_increment(out), 1);
         }
     } else {
         // The right run is shorter.
@@ -216,37 +217,15 @@ where
 /// 2. for every `i` in `2..runs.len()`: `runs[i - 2].len > runs[i - 1].len + runs[i].len`
 ///
 /// The invariants ensure that the total running time is `O(n log n)` worst-case.
-pub fn sort<T, F>(v: &mut [T], mut is_less: F)
+fn mergesort<T, F>(v: &mut [T], buf: *mut T, is_less: &F)
 where
-    F: FnMut(&T, &T) -> bool,
+    T: Send,
+    F: Sync + Fn(&T, &T) -> bool,
 {
-    // Slices of up to this length get sorted using insertion sort.
-    const MAX_INSERTION: usize = 20;
     // Very short runs are extended using insertion sort to span at least this many elements.
     const MIN_RUN: usize = 10;
 
-    // Sorting has no meaningful behavior on zero-sized types.
-    if size_of::<T>() == 0 {
-        return;
-    }
-
     let len = v.len();
-
-    // Short arrays get sorted in-place via insertion sort to avoid allocations.
-    if len <= MAX_INSERTION {
-        if len >= 2 {
-            for i in (0..len - 1).rev() {
-                insert_head(&mut v[i..], &mut is_less);
-            }
-        }
-        return;
-    }
-
-    // Allocate a buffer to use as scratch memory. We keep the length 0 so we can keep in it
-    // shallow copies of the contents of `v` without risking the dtors running on copies if
-    // `is_less` panics. When merging two sorted runs, this buffer holds a copy of the shorter run,
-    // which will always have length at most `len / 2`.
-    let mut buf = Vec::with_capacity(len / 2);
 
     // In order to identify natural runs in `v`, we traverse it backwards. That might seem like a
     // strange decision, but consider the fact that merges more often go in the opposite direction
@@ -279,7 +258,7 @@ where
         // merge sort on short sequences, so this significantly improves performance.
         while start > 0 && end - start < MIN_RUN {
             start -= 1;
-            insert_head(&mut v[start..end], &mut is_less);
+            insert_head(&mut v[start..end], &is_less);
         }
 
         // Push this run onto the stack.
@@ -297,8 +276,8 @@ where
                 merge(
                     &mut v[left.start..right.start + right.len],
                     left.len,
-                    buf.as_mut_ptr(),
-                    &mut is_less,
+                    buf,
+                    &is_less,
                 );
             }
             runs[r] = Run {
@@ -329,10 +308,11 @@ where
     #[inline]
     fn collapse(runs: &[Run]) -> Option<usize> {
         let n = runs.len();
-        if n >= 2 &&
-            (runs[n - 1].start == 0 || runs[n - 2].len <= runs[n - 1].len ||
-                 (n >= 3 && runs[n - 3].len <= runs[n - 2].len + runs[n - 1].len) ||
-                 (n >= 4 && runs[n - 4].len <= runs[n - 3].len + runs[n - 2].len))
+
+        if n >= 2 && (runs[n - 1].start == 0 ||
+                      runs[n - 2].len <= runs[n - 1].len ||
+                      (n >= 3 && runs[n - 3].len <= runs[n - 2].len + runs[n - 1].len) ||
+                      (n >= 4 && runs[n - 4].len <= runs[n - 3].len + runs[n - 2].len))
         {
             if n >= 3 && runs[n - 3].len < runs[n - 1].len {
                 Some(n - 3)
@@ -349,4 +329,68 @@ where
         start: usize,
         len: usize,
     }
+}
+
+fn recurse<T, F>(v: &mut [T], buf: *mut T, is_less: &F)
+where
+    T: Send,
+    F: Sync + Fn(&T, &T) -> bool,
+{
+    // Slices of up to this length get sorted sequentially.
+    const MAX_SEQUENTIAL: usize = 1000;
+
+    let len = v.len();
+
+    if len <= MAX_SEQUENTIAL {
+        mergesort(v, buf, is_less);
+    } else {
+        {
+            let (left, right) = v.split_at_mut(len / 2);
+            let buf_left = buf as usize;
+            let buf_right = unsafe { buf.offset(len as isize / 2) } as usize;
+
+            rayon::join(
+                || recurse(left, buf_left as *mut T, is_less),
+                || recurse(right, buf_right as *mut T, is_less),
+            );
+        }
+
+        unsafe {
+            merge(v, len / 2, buf, is_less);
+        }
+    }
+}
+
+pub fn sort<T, F>(v: &mut [T], is_less: F)
+where
+    T: Send,
+    F: Sync + Fn(&T, &T) -> bool,
+{
+    // Slices of up to this length get sorted using insertion sort.
+    const MAX_INSERTION: usize = 20;
+
+    // Sorting has no meaningful behavior on zero-sized types.
+    if size_of::<T>() == 0 {
+        return;
+    }
+
+    let len = v.len();
+
+    // Short arrays get sorted in-place via insertion sort to avoid allocations.
+    if len <= MAX_INSERTION {
+        if len >= 2 {
+            for i in (0..len - 1).rev() {
+                insert_head(&mut v[i..], &is_less);
+            }
+        }
+        return;
+    }
+
+    // Allocate a buffer to use as scratch memory. We keep the length 0 so we can keep in it
+    // shallow copies of the contents of `v` without risking the dtors running on copies if
+    // `is_less` panics. When merging two sorted runs, this buffer holds a copy of the shorter run,
+    // which will always have length at most `len / 2`.
+    let mut buf = Vec::with_capacity(len / 2);
+
+    recurse(v, buf.as_mut_ptr(), &is_less);
 }
