@@ -626,11 +626,10 @@ where
 fn recurse<'a, T, F>(mut v: &'a mut [T], is_less: &F, mut pred: Option<&'a mut T>, mut limit: usize)
 where
     T: Send,
-    F: Sync + Fn(&T, &T) -> bool,
+    F: Fn(&T, &T) -> bool + Sync,
 {
     // Slices of up to this length get sorted using insertion sort.
     const MAX_INSERTION: usize = 20;
-
     // Slices of up to this length get sorted sequentially.
     const MAX_SEQUENTIAL: usize = 1000;
 
@@ -711,20 +710,24 @@ where
                 v = left;
             }
         } else {
-            // Sort left and right half in parallel.
-            rayon::join(|| recurse(left, is_less, pred, limit), || {
-                recurse(right, is_less, Some(pivot), limit)
-            });
+            // Sort the left and right half in parallel.
+            rayon::join(
+                || recurse(left, is_less, pred, limit),
+                || recurse(right, is_less, Some(pivot), limit),
+            );
             break;
         }
     }
 }
 
 /// Sorts `v` using pattern-defeating quicksort, which is `O(n log n)` worst-case.
+///
+/// The algorithm is based on the one invented by Orson Peters, which is published at:
+/// https://github.com/orlp/pdqsort
 pub fn sort<T, F>(v: &mut [T], is_less: F)
 where
     T: Send,
-    F: Sync + Fn(&T, &T) -> bool,
+    F: Fn(&T, &T) -> bool + Sync,
 {
     // Sorting has no meaningful behavior on zero-sized types.
     if mem::size_of::<T>() == 0 {
