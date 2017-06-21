@@ -218,14 +218,19 @@ where
     }
 }
 
+/// The result of merge sort.
 #[must_use]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MergesortResult {
+    /// The slice has already been sorted.
     NonDescending,
+    /// The slice has been descending and therefore it was left intact.
     Descending,
+    /// The slice was sorted.
     Sorted,
 }
 
+/// A sorted run that starts at index `start` and is of length `len`.
 #[derive(Clone, Copy)]
 struct Run {
     start: usize,
@@ -592,6 +597,8 @@ where
 }
 
 /// Sorts `v` using merge sort, which is stable, allocates memory, and `O(n log n)` worst-case.
+///
+/// The algorithm allocates a temporary buffer of the same length as `v`.
 pub fn sort<T, F>(v: &mut [T], is_less: F)
 where
     T: Send,
@@ -609,7 +616,7 @@ where
 
     let len = v.len();
 
-    // Short arrays get sorted in-place via insertion sort to avoid allocations.
+    // Short slices get sorted in-place via insertion sort to avoid allocations.
     if len <= MAX_INSERTION {
         if len >= 2 {
             for i in (0..len - 1).rev() {
