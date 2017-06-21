@@ -1,8 +1,36 @@
 use std::mem::size_of;
 use std::mem;
 use std::ptr;
+use std::slice;
 
 use rayon;
+use rayon::prelude::*;
+
+unsafe fn get_and_increment<T>(ptr: &mut *mut T) -> *mut T {
+    let old = *ptr;
+    *ptr = ptr.offset(1);
+    old
+}
+
+unsafe fn decrement_and_get<T>(ptr: &mut *mut T) -> *mut T {
+    *ptr = ptr.offset(-1);
+    *ptr
+}
+
+/// When dropped, copies from `src` into `dest` a sequence of length `len`.
+struct CopyOnDrop<T> {
+    src: *mut T,
+    dest: *mut T,
+    len: usize,
+}
+
+impl<T> Drop for CopyOnDrop<T> {
+    fn drop(&mut self) {
+        unsafe {
+            ptr::copy_nonoverlapping(self.src, self.dest, self.len);
+        }
+    }
+}
 
 /// Inserts `v[0]` into pre-sorted sequence `v[1..]` so that whole `v[..]` becomes sorted.
 ///
@@ -101,10 +129,6 @@ where
     let v_mid = v.offset(mid as isize);
     let v_end = v.offset(len as isize);
 
-    if !is_less(&*v_mid, &*v_mid.offset(-1)) {
-        return;
-    }
-
     // The merge process first copies the shorter run into `buf`. Then it traces the newly copied
     // run and the longer run forwards (or backwards), comparing their next unconsumed elements and
     // copying the lesser (or greater) one into `v`.
@@ -176,17 +200,6 @@ where
     // Finally, `hole` gets dropped. If the shorter run was not fully consumed, whatever remains of
     // it will now be copied into the hole in `v`.
 
-    unsafe fn get_and_increment<T>(ptr: &mut *mut T) -> *mut T {
-        let old = *ptr;
-        *ptr = ptr.offset(1);
-        old
-    }
-
-    unsafe fn decrement_and_get<T>(ptr: &mut *mut T) -> *mut T {
-        *ptr = ptr.offset(-1);
-        *ptr
-    }
-
     // When dropped, copies the range `start..end` into `dest..`.
     struct MergeHole<T> {
         start: *mut T,
@@ -205,6 +218,57 @@ where
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MergesortResult {
+    NonDescending,
+    Descending,
+    Sorted,
+}
+
+#[derive(Clone, Copy)]
+struct Run {
+    start: usize,
+    len: usize,
+}
+
+/// Examines the stack of runs and identifies the next pair of runs to merge. More specifically,
+/// if `Some(r)` is returned, that means `runs[r]` and `runs[r + 1]` must be merged next. If the
+/// algorithm should continue building a new run instead, `None` is returned.
+///
+/// TimSort is infamous for its buggy implementations, as described here:
+/// http://envisage-project.eu/timsort-specification-and-verification/
+///
+/// The gist of the story is: we must enforce the invariants on the top four runs on the stack.
+/// Enforcing them on just top three is not sufficient to ensure that the invariants will still
+/// hold for *all* runs in the stack.
+///
+/// This function correctly checks invariants for the top four runs. Additionally, if the top
+/// run starts at index 0, it will always demand a merge operation until the stack is fully
+/// collapsed, in order to complete the sort.
+#[inline]
+fn collapse(runs: &[Run]) -> Option<usize> {
+    let n = runs.len();
+
+    if n >= 2 && (runs[n - 1].start == 0 ||
+                  runs[n - 2].len <= runs[n - 1].len ||
+                  (n >= 3 && runs[n - 3].len <= runs[n - 2].len + runs[n - 1].len) ||
+                  (n >= 4 && runs[n - 4].len <= runs[n - 3].len + runs[n - 2].len))
+    {
+        if n >= 3 && runs[n - 3].len < runs[n - 1].len {
+            Some(n - 3)
+        } else {
+            Some(n - 2)
+        }
+    } else {
+        None
+    }
+}
+
+/// Sorts a slice using merge sort, unless it is already in descending order.
+///
+/// This function doesn't modify the slice if it is already non-descending or descending.
+/// Otherwise, it sorts the slice into non-descending order.
+///
 /// This merge sort borrows some (but not all) ideas from TimSort, which is described in detail
 /// [here](http://svn.python.org/projects/python/trunk/Objects/listsort.txt).
 ///
@@ -217,10 +281,14 @@ where
 /// 2. for every `i` in `2..runs.len()`: `runs[i - 2].len > runs[i - 1].len + runs[i].len`
 ///
 /// The invariants ensure that the total running time is `O(n log n)` worst-case.
-fn mergesort<T, F>(v: &mut [T], buf: *mut T, is_less: &F)
+///
+/// # Safety
+///
+/// The argument `buf` is used as a temporary buffer and must be at least as long as `v`.
+unsafe fn mergesort<T, F>(v: &mut [T], buf: *mut T, is_less: &F) -> MergesortResult
 where
     T: Send,
-    F: Sync + Fn(&T, &T) -> bool,
+    F: Fn(&T, &T) -> bool + Sync,
 {
     // Very short runs are extended using insertion sort to span at least this many elements.
     const MIN_RUN: usize = 10;
@@ -236,20 +304,29 @@ where
     while end > 0 {
         // Find the next natural run, and reverse it if it's strictly descending.
         let mut start = end - 1;
+
         if start > 0 {
             start -= 1;
-            unsafe {
-                if is_less(v.get_unchecked(start + 1), v.get_unchecked(start)) {
-                    while start > 0 && is_less(v.get_unchecked(start), v.get_unchecked(start - 1)) {
-                        start -= 1;
-                    }
-                    v[start..end].reverse();
+
+            if is_less(v.get_unchecked(start + 1), v.get_unchecked(start)) {
+                while start > 0 && is_less(v.get_unchecked(start), v.get_unchecked(start - 1)) {
+                    start -= 1;
+                }
+
+                // If this descending run covers the whole slice, return immediately.
+                if start == 0 && end == len {
+                    return MergesortResult::Descending;
                 } else {
-                    while start > 0 &&
-                        !is_less(v.get_unchecked(start), v.get_unchecked(start - 1))
-                    {
-                        start -= 1;
-                    }
+                    v[start..end].reverse();
+                }
+            } else {
+                while start > 0 && !is_less(v.get_unchecked(start), v.get_unchecked(start - 1)) {
+                    start -= 1;
+                }
+
+                // If this non-descending run covers the whole slice, return immediately.
+                if end - start == len {
+                    return MergesortResult::NonDescending;
                 }
             }
         }
@@ -272,14 +349,8 @@ where
         while let Some(r) = collapse(&runs) {
             let left = runs[r + 1];
             let right = runs[r];
-            unsafe {
-                merge(
-                    &mut v[left.start..right.start + right.len],
-                    left.len,
-                    buf,
-                    &is_less,
-                );
-            }
+            merge(&mut v[left.start..right.start + right.len], left.len, buf, &is_less);
+
             runs[r] = Run {
                 start: left.start,
                 len: left.len + right.len,
@@ -291,83 +362,244 @@ where
     // Finally, exactly one run must remain in the stack.
     debug_assert!(runs.len() == 1 && runs[0].start == 0 && runs[0].len == len);
 
-    // Examines the stack of runs and identifies the next pair of runs to merge. More specifically,
-    // if `Some(r)` is returned, that means `runs[r]` and `runs[r + 1]` must be merged next. If the
-    // algorithm should continue building a new run instead, `None` is returned.
-    //
-    // TimSort is infamous for its buggy implementations, as described here:
-    // http://envisage-project.eu/timsort-specification-and-verification/
-    //
-    // The gist of the story is: we must enforce the invariants on the top four runs on the stack.
-    // Enforcing them on just top three is not sufficient to ensure that the invariants will still
-    // hold for *all* runs in the stack.
-    //
-    // This function correctly checks invariants for the top four runs. Additionally, if the top
-    // run starts at index 0, it will always demand a merge operation until the stack is fully
-    // collapsed, in order to complete the sort.
-    #[inline]
-    fn collapse(runs: &[Run]) -> Option<usize> {
-        let n = runs.len();
+    // The original order of the slice was neither non-descending nor descending.
+    MergesortResult::Sorted
+}
 
-        if n >= 2 && (runs[n - 1].start == 0 ||
-                      runs[n - 2].len <= runs[n - 1].len ||
-                      (n >= 3 && runs[n - 3].len <= runs[n - 2].len + runs[n - 1].len) ||
-                      (n >= 4 && runs[n - 4].len <= runs[n - 3].len + runs[n - 2].len))
-        {
-            if n >= 3 && runs[n - 3].len < runs[n - 1].len {
-                Some(n - 3)
+/// Splits two sorted slices so that they can be merged in parallel.
+///
+/// Returns two indices `(a, b)` so that slices `left[..a]` and `right[..b]` come before
+/// `left[a..]` and `right[b..]`.
+fn divide_merge<T, F>(left: &[T], right: &[T], is_less: &F) -> (usize, usize)
+where
+    F: Fn(&T, &T) -> bool,
+{
+    let left_len = left.len();
+    let right_len = right.len();
+
+    if left_len >= right_len {
+        let left_mid = left_len / 2;
+
+        // Find the first element in `right` that is greater or equal to `left[left_mid]`.
+        let mut a = 0;
+        let mut b = right_len;
+        while a < b {
+            let m = a + (b - a) / 2;
+            if is_less(&right[m], &left[left_mid]) {
+                a = m + 1;
             } else {
-                Some(n - 2)
+                b = m;
             }
-        } else {
-            None
         }
-    }
 
-    #[derive(Clone, Copy)]
-    struct Run {
-        start: usize,
-        len: usize,
+        (left_mid, a)
+    } else {
+        let right_mid = right_len / 2;
+
+        // Find the first element in `left` that is greater than `right[right_mid]`.
+        let mut a = 0;
+        let mut b = left_len;
+        while a < b {
+            let m = a + (b - a) / 2;
+            if is_less(&right[right_mid], &left[m]) {
+                b = m;
+            } else {
+                a = m + 1;
+            }
+        }
+
+        (a, right_mid)
     }
 }
 
-fn recurse<T, F>(v: &mut [T], buf: *mut T, is_less: &F)
+/// Merges slices `left` and `right` in parallel and stores the result into `dest`.
+///
+/// # Safety
+///
+/// The `dest` pointer must have enough space to store the result.
+///
+/// Even if `is_less` panics at any point during the merge process, this function will fully copy
+/// all elements from `left` and `right` into `dest` (not necessarily in sorted order).
+unsafe fn par_merge<T, F>(left: &mut [T], right: &mut [T], dest: *mut T, is_less: &F)
 where
     T: Send,
-    F: Sync + Fn(&T, &T) -> bool,
+    F: Fn(&T, &T) -> bool + Sync,
 {
-    // Slices of up to this length get sorted sequentially.
-    const MAX_SEQUENTIAL: usize = 1000;
+    // Slices whose length sum up to this value are merged sequentially.
+    const MAX_SEQUENTIAL: usize = 5000;
 
-    let len = v.len();
+    let left_len = left.len();
+    let right_len = right.len();
 
-    if len <= MAX_SEQUENTIAL {
-        mergesort(v, buf, is_less);
-    } else {
-        {
-            let (left, right) = v.split_at_mut(len / 2);
-            let buf_left = buf as usize;
-            let buf_right = unsafe { buf.offset(len as isize / 4) } as usize;
+    // Intermediate state of the merge process, which serves two purposes:
+    // 1. Protects integrity of `dest` from panics in `is_less`.
+    // 2. Copies the remaining elements as soon as one of the two sides is exhausted.
+    //
+    // Panic safety:
+    //
+    // If `is_less` panics at any point during the merge process, `s` will get dropped and copy the
+    // remaining parts of `left` and `right` into `dest`.
+    let mut s = State {
+        left_start: left.as_mut_ptr(),
+        left_end: left.as_mut_ptr().offset(left_len as isize),
+        right_start: right.as_mut_ptr(),
+        right_end: right.as_mut_ptr().offset(right_len as isize),
+        dest,
+    };
 
-            rayon::join(
-                || recurse(left, buf_left as *mut T, is_less),
-                || recurse(right, buf_right as *mut T, is_less),
-            );
+    if left_len == 0 || right_len == 0 || left_len + right_len < MAX_SEQUENTIAL {
+        while s.left_start < s.left_end && s.right_start < s.right_end {
+            // Consume the lesser side.
+            // If equal, prefer the left run to maintain stability.
+            let to_copy = if is_less(&*s.right_start, &*s.left_start) {
+                get_and_increment(&mut s.right_start)
+            } else {
+                get_and_increment(&mut s.left_start)
+            };
+            ptr::copy_nonoverlapping(to_copy, get_and_increment(&mut s.dest), 1);
         }
+    } else {
+        // Function `divide_merge` might panic. If that happens, `s` will get destructed and copy
+        // the whole `left` and `right` into `dest`.
+        let (left_mid, right_mid) = divide_merge(left, right, is_less);
+        let (left_l, left_r) = left.split_at_mut(left_mid);
+        let (right_l, right_r) = right.split_at_mut(right_mid);
 
-        unsafe {
-            merge(v, len / 2, buf, is_less);
+        // Prevent the destructor of `s` from running. Rayon will ensure that both calls to
+        // `par_merge` happen. If one of the two calls panics, they will ensure that elements still
+        // get copied into `dest_left` and `dest_right``.
+        mem::forget(s);
+
+        // Convert the pointers to `usize` because `*mut T` is not `Send`.
+        let dest_left = dest as usize;
+        let dest_right = dest.offset((left_l.len() + right_l.len()) as isize) as usize;
+
+        rayon::join(
+            || par_merge(left_l, right_l, dest_left as *mut T, is_less),
+            || par_merge(left_r, right_r, dest_right as *mut T, is_less),
+        );
+    }
+    // Finally, `s` gets dropped if we used sequential merge, thus copying the remaining elements
+    // all at once.
+
+    // When dropped, copies arrays `left_start..left_end` and `right_start..right_end` into `dest`,
+    // in this order.
+    struct State<T> {
+        left_start: *mut T,
+        left_end: *mut T,
+        right_start: *mut T,
+        right_end: *mut T,
+        dest: *mut T,
+    }
+
+    impl<T> Drop for State<T> {
+        fn drop(&mut self) {
+            let size = mem::size_of::<T>();
+            let left_len = (self.left_end as usize - self.left_start as usize) / size;
+            let right_len = (self.right_end as usize -  self.right_start as usize) / size;
+
+            // Copy array `left`, followed by `right`.
+            unsafe {
+                ptr::copy_nonoverlapping(self.left_start, self.dest, left_len);
+                self.dest = self.dest.offset(left_len as isize);
+                ptr::copy_nonoverlapping(self.right_start, self.dest, right_len);
+            }
         }
     }
 }
 
+/// Recursively merges pre-sorted chunks in `v`.
+///
+/// Chunks of `v` are stored in `chunks` as intervals (inclusive left and exclusive right bound).
+/// Argument `buf` is an auxilliary buffer that will be used during the procedure.
+/// If `into_buf` is true, the result of merging chunks will be stored into `buf`, otherwise it will
+/// be in `v`.
+///
+/// # Safety
+///
+/// The number of chunks must be positive and they must be adjacent: the right bound of each chunk
+/// must equal the left bound of the following chunk.
+///
+/// The buffer must be at least as long as `v`.
+unsafe fn recurse<T, F>(
+    v: *mut T,
+    buf: *mut T,
+    chunks: &[(usize, usize)],
+    into_buf: bool,
+    is_less: &F,
+)
+where
+    T: Send,
+    F: Fn(&T, &T) -> bool + Sync,
+{
+    let len = chunks.len();
+    debug_assert!(len > 0);
+
+    // Base case of the algorithm.
+    // If only one chunk is remaining, there's no more work to divide and merge.
+    if len == 1 {
+        if into_buf {
+            // Copy the chunk from `v` into `buf`.
+            let (start, end) = chunks[0];
+            let src = v.offset(start as isize);
+            let dest = buf.offset(start as isize);
+            ptr::copy_nonoverlapping(src, dest, end - start);
+        }
+        return;
+    }
+
+    // Split the chunks into two halves.
+    let (start, _) = chunks[0];
+    let (mid, _) = chunks[len / 2];
+    let (_, end) = chunks[len - 1];
+    let (left, right) = chunks.split_at(len / 2);
+
+    // Recursive calls flip `into_buf` on each level of recursion. This way `par_merge` merges
+    // chunks from `buf` into `v` on the first level, from `v` into `buf` on the second level etc.
+    //
+    // After recursive calls finish we'll need to merge chunks `(start, mid)` and `(mid, end)` from
+    // `src` into `dest`. If the current invocation needs to store the result into `buf`, we'll
+    // merge chunks from `v` into `buf`, and viceversa.
+    //
+    // If we didn't filp the source and destination on each level, we'd have to copy all chunks
+    // from `buf` back into `v` every time after merging, and that'd negatively affect performance.
+    let (src, dest) = if into_buf { (v, buf) } else { (buf, v) };
+
+    // Panic safety:
+    //
+    // If `is_less` panics at any point during the recursive calls, the destructor of `guard` will
+    // be executed, thus copying everything from `src` into `dest`. This way we ensure that all
+    // chunks are in fact copied into `dest`, even if the merge process didn't finish.
+    let guard = CopyOnDrop { src, dest, len };
+
+    // Convert the pointers to `usize` because `*mut T` is not `Send`.
+    let v = v as usize;
+    let buf = buf as usize;
+    rayon::join(
+        || recurse(v as *mut T, buf as *mut T, left, !into_buf, is_less),
+        || recurse(v as *mut T, buf as *mut T, right, !into_buf, is_less),
+    );
+
+    // Everything went all right: recursive calls didn't panic.
+    // Forget the guard in order to prevent its destructor from running.
+    mem::forget(guard);
+
+    // Merge chunks `(start, mid)` and `(mid, end)` from `src` into `dest`.
+    let src_left = slice::from_raw_parts_mut(src.offset(start as isize), mid - start);
+    let src_right = slice::from_raw_parts_mut(src.offset(mid as isize), end - mid);
+    par_merge(src_left, src_right, dest.offset(start as isize), is_less);
+}
+
+/// TODO
 pub fn sort<T, F>(v: &mut [T], is_less: F)
 where
     T: Send,
-    F: Sync + Fn(&T, &T) -> bool,
+    F: Fn(&T, &T) -> bool + Sync,
 {
     // Slices of up to this length get sorted using insertion sort.
     const MAX_INSERTION: usize = 20;
+    // TODO: explain
+    const CHUNK: usize = 5000;
 
     // Sorting has no meaningful behavior on zero-sized types.
     if size_of::<T>() == 0 {
@@ -388,17 +620,68 @@ where
 
     // Allocate a buffer to use as scratch memory. We keep the length 0 so we can keep in it
     // shallow copies of the contents of `v` without risking the dtors running on copies if
-    // `is_less` panics. When merging two sorted runs, this buffer holds a copy of the shorter run,
-    // which will always have length at most `len / 2`.
-    let mut buf = Vec::with_capacity(len / 2);
+    // `is_less` panics.
+    let mut buf = Vec::<T>::with_capacity(len);
+    let buf = buf.as_mut_ptr();
 
-    recurse(v, buf.as_mut_ptr(), &is_less);
+    if len <= CHUNK {
+        unsafe {
+            if mergesort(v, buf, &is_less) == MergesortResult::Descending {
+                v.reverse();
+            }
+        }
+        return;
+    }
+
+    let mut chunks = {
+        let buf = buf as usize;
+        v.par_chunks_mut(CHUNK)
+            .with_max_len(1)
+            .enumerate()
+            .map(|(i, chunk)| {
+                let l = CHUNK * i;
+                let r = l + chunk.len();
+                unsafe {
+                    let buf = (buf as *mut T).offset(l as isize);
+                    (l, r, mergesort(chunk, buf, &is_less))
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .peekable()
+    };
+
+    let mut merged = Vec::with_capacity(chunks.len());
+
+    while let Some((a, mut b, res)) = chunks.next() {
+        if res != MergesortResult::Sorted {
+            while let Some(&(x, y, r)) = chunks.peek() {
+                if r == res && (r == MergesortResult::Descending) == is_less(&v[x], &v[x - 1]) {
+                    b = y;
+                    chunks.next();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        if res == MergesortResult::Descending {
+            v[a..b].reverse();
+        }
+
+        merged.push((a, b));
+    }
+
+    unsafe {
+        recurse(v.as_mut_ptr(), buf as *mut T, &merged, false, &is_less);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     extern crate rand;
 
+    use super::divide_merge;
     use super::sort;
     use self::rand::{thread_rng, Rng};
 
@@ -422,6 +705,40 @@ mod tests {
             sort(&mut b, |&(x, _), &(y, _)| x.lt(&y));
 
             assert_eq!(a, b);
+        }
+    }
+
+    #[test]
+    fn test_divide_merge() {
+        fn check(left: &[u32], right: &[u32]) {
+            let (l, r) = divide_merge(left, right, &|&a, &b| a < b);
+            assert!(left[..l].iter().all(|&x| right[r..].iter().all(|&y| x <= y)));
+            assert!(right[..r].iter().all(|&x| left[l..].iter().all(|&y| x < y)));
+        }
+
+        check(&[1, 2, 2, 2, 2, 3], &[1, 2, 2, 2, 2, 3]);
+        check(&[1, 2, 2, 2, 2, 3], &[]);
+        check(&[], &[1, 2, 2, 2, 2, 3]);
+
+        for _ in 0..100 {
+            let mut rng = thread_rng();
+
+            let limit = rng.gen::<u32>() % 20 + 1;
+            let left_len = rng.gen::<usize>() % 20;
+            let right_len = rng.gen::<usize>() % 20;
+
+            let mut left = rng.gen_iter::<u32>()
+                .map(|x| x % limit)
+                .take(left_len)
+                .collect::<Vec<_>>();
+            let mut right = rng.gen_iter::<u32>()
+                .map(|x| x % limit)
+                .take(right_len)
+                .collect::<Vec<_>>();
+
+            left.sort();
+            right.sort();
+            check(&left, &right);
         }
     }
 }
