@@ -630,8 +630,8 @@ where
 {
     // Slices of up to this length get sorted using insertion sort.
     const MAX_INSERTION: usize = 20;
-    // Slices of up to this length get sorted sequentially.
-    const MAX_SEQUENTIAL: usize = 1000;
+    // If both partitions are up to this length, we continue sequentially.
+    const MAX_SEQUENTIAL: usize = 2000;
 
     // True if the last partitioning was reasonably balanced.
     let mut was_balanced = true;
@@ -697,7 +697,7 @@ where
         let (pivot, right) = right.split_at_mut(1);
         let pivot = &mut pivot[0];
 
-        if len <= MAX_SEQUENTIAL {
+        if cmp::max(left.len(), right.len()) <= MAX_SEQUENTIAL {
             // Recurse into the shorter side only in order to minimize the total number of recursive
             // calls and consume less stack space. Then just continue with the longer side (this is
             // akin to tail recursion).

@@ -607,7 +607,7 @@ where
     // Slices of up to this length get sorted using insertion sort.
     const MAX_INSERTION: usize = 20;
     // The length of initial chunks.
-    const CHUNK_LENGTH: usize = 5000;
+    const CHUNK_LENGTH: usize = 2000;
 
     // Sorting has no meaningful behavior on zero-sized types.
     if size_of::<T>() == 0 {
