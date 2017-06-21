@@ -218,6 +218,7 @@ where
     }
 }
 
+#[must_use]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MergesortResult {
     NonDescending,
@@ -590,7 +591,7 @@ where
     par_merge(src_left, src_right, dest.offset(start as isize), is_less);
 }
 
-/// TODO
+/// Sorts `v` using merge sort, which is stable, allocates memory, and `O(n log n)` worst-case.
 pub fn sort<T, F>(v: &mut [T], is_less: F)
 where
     T: Send,
@@ -598,8 +599,8 @@ where
 {
     // Slices of up to this length get sorted using insertion sort.
     const MAX_INSERTION: usize = 20;
-    // TODO: explain
-    const CHUNK: usize = 5000;
+    // The length of initial chunks.
+    const CHUNK_LENGTH: usize = 5000;
 
     // Sorting has no meaningful behavior on zero-sized types.
     if size_of::<T>() == 0 {
@@ -624,22 +625,26 @@ where
     let mut buf = Vec::<T>::with_capacity(len);
     let buf = buf.as_mut_ptr();
 
-    if len <= CHUNK {
-        unsafe {
-            if mergesort(v, buf, &is_less) == MergesortResult::Descending {
-                v.reverse();
-            }
+    // If the slice is not longer than one chunk would be, do sequential merge sort and return.
+    if len <= CHUNK_LENGTH {
+        let res = unsafe { mergesort(v, buf, &is_less) };
+        if res == MergesortResult::Descending {
+            v.reverse();
         }
         return;
     }
 
-    let mut chunks = {
+    // Split the slice into chunks and merge sort them in parallel.
+    // However, descending chunks will not be sorted - they will be simply left intact.
+    let mut iter = {
+        // Convert the pointer to `usize` because `*mut T` is not `Send`.
         let buf = buf as usize;
-        v.par_chunks_mut(CHUNK)
+
+        v.par_chunks_mut(CHUNK_LENGTH)
             .with_max_len(1)
             .enumerate()
             .map(|(i, chunk)| {
-                let l = CHUNK * i;
+                let l = CHUNK_LENGTH * i;
                 let r = l + chunk.len();
                 unsafe {
                     let buf = (buf as *mut T).offset(l as isize);
@@ -651,29 +656,35 @@ where
             .peekable()
     };
 
-    let mut merged = Vec::with_capacity(chunks.len());
+    // Now concatenate adjacent chunks that are descending or were already sorted from the start.
+    let mut chunks = Vec::with_capacity(iter.len());
 
-    while let Some((a, mut b, res)) = chunks.next() {
+    while let Some((a, mut b, res)) = iter.next() {
+        // If this chunk was not modified by the sort procedure...
         if res != MergesortResult::Sorted {
-            while let Some(&(x, y, r)) = chunks.peek() {
+            while let Some(&(x, y, r)) = iter.peek() {
+                // If the following chunk is of the same type and can be concatenated...
                 if r == res && (r == MergesortResult::Descending) == is_less(&v[x], &v[x - 1]) {
                     b = y;
-                    chunks.next();
+                    iter.next();
                 } else {
                     break;
                 }
             }
         }
 
+        // Descending chunks must be reversed.
         if res == MergesortResult::Descending {
             v[a..b].reverse();
         }
 
-        merged.push((a, b));
+        chunks.push((a, b));
     }
 
+    // All chunks are properly sorted.
+    // Now we just have to merge them together.
     unsafe {
-        recurse(v.as_mut_ptr(), buf as *mut T, &merged, false, &is_less);
+        recurse(v.as_mut_ptr(), buf as *mut T, &chunks, false, &is_less);
     }
 }
 

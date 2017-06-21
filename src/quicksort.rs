@@ -720,7 +720,8 @@ where
     }
 }
 
-/// Sorts `v` using pattern-defeating quicksort, which is `O(n log n)` worst-case.
+/// Sorts `v` using pattern-defeating quicksort, which is unstable, in-place, and `O(n log n)`
+/// worst-case.
 ///
 /// The algorithm is based on the one invented by Orson Peters, which is published at:
 /// https://github.com/orlp/pdqsort
