@@ -7,8 +7,6 @@ readme = "README.md"
 license = "Apache-2.0/MIT"
 
 [dependencies]
+lazy_static = "0.2"
 rand = "0.3"
 rayon = "0.8.1"
-
-[dev-dependencies]
-rand = "0.3"

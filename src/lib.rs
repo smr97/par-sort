@@ -1,10 +1,16 @@
+#![cfg_attr(test, feature(test))]
+
 extern crate rand;
 extern crate rayon;
+#[cfg(test)]
+extern crate test;
 
 use std::cmp::Ordering;
 
 mod mergesort;
 mod quicksort;
+#[cfg(test)]
+mod tests;
 
 pub use mergesort::par_mergesort;
 pub use quicksort::par_quicksort;

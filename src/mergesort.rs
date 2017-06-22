@@ -703,7 +703,7 @@ where
 mod tests {
     use rand::{thread_rng, Rng};
 
-    use super::{divide_merge, par_mergesort};
+    use super::divide_merge;
 
     #[test]
     fn test_divide_merge() {
@@ -736,121 +736,6 @@ mod tests {
             left.sort();
             right.sort();
             check(&left, &right);
-        }
-    }
-
-    #[test]
-    fn test_par_mergesort() {
-        let mut rng = thread_rng();
-
-        for len in (0..25).chain(500..501) {
-            for &modulus in &[5, 10, 100] {
-                for _ in 0..100 {
-                    let mut v: Vec<_> = rng.gen_iter::<i32>()
-                        .map(|x| x % modulus)
-                        .take(len)
-                        .collect();
-
-                    // Test heapsort using `<` operator.
-                    let mut tmp = v.clone();
-                    par_mergesort(&mut tmp, |a, b| a < b);
-                    assert!(tmp.windows(2).all(|w| w[0] <= w[1]));
-
-                    // Test mergesort using `>` operator.
-                    let mut tmp = v.clone();
-                    par_mergesort(&mut tmp, |a, b| a > b);
-                    assert!(tmp.windows(2).all(|w| w[0] >= w[1]));
-                }
-            }
-        }
-
-        for &len in &[1000, 10_000, 100_000] {
-            for &modulus in &[5, 10, 100, 10_000] {
-                let mut v: Vec<_> = rng.gen_iter::<i32>()
-                    .map(|x| x % modulus)
-                    .take(len)
-                    .collect();
-
-                par_mergesort(&mut v, |a, b| a < b);
-                assert!(v.windows(2).all(|w| w[0] <= w[1]));
-            }
-        }
-
-        for &len in &[1000, 10_000, 100_000] {
-            for &modulus in &[5, 10, 1000, 50_000] {
-                let mut v: Vec<_> = rng.gen_iter::<i32>()
-                    .map(|x| x % modulus)
-                    .take(len)
-                    .collect();
-
-                v.sort();
-                v.reverse();
-
-                for _ in 0..5 {
-                    let a = rng.gen::<usize>() % len;
-                    let b = rng.gen::<usize>() % len;
-                    if a < b {
-                        v[a..b].reverse();
-                    } else {
-                        v.swap(a, b);
-                    }
-                }
-
-                par_mergesort(&mut v, |a, b| a < b);
-                assert!(v.windows(2).all(|w| w[0] <= w[1]));
-            }
-        }
-
-        // Sort using a completely random comparison function.
-        // This will reorder the elements *somehow*, but won't panic.
-        let mut v: Vec<_> = (0..100).collect();
-        par_mergesort(&mut v, |_, _| thread_rng().gen());
-        par_mergesort(&mut v, |a, b| a < b);
-
-        for i in 0..v.len() {
-            assert_eq!(v[i], i);
-        }
-
-        // Should not panic.
-        par_mergesort(&mut [0i32; 0], |a, b| *a < *b);
-        par_mergesort(&mut [(); 10], |a, b| *a < *b);
-        par_mergesort(&mut [(); 100], |a, b| *a < *b);
-
-        let mut v = [0xDEADBEEFu64];
-        par_mergesort(&mut v, |a, b| *a < *b);
-        assert!(v == [0xDEADBEEF]);
-    }
-
-    #[test]
-    fn test_par_mergesort_stability() {
-        for len in (2..25).chain(500..510).chain(50_000..50_010) {
-            for _ in 0..10 {
-                let mut counts = [0; 10];
-
-                // Create a vector like [(6, 1), (5, 1), (6, 2), ...],
-                // where the first item of each tuple is random, but
-                // the second item represents which occurrence of that
-                // number this element is, i.e. the second elements
-                // will occur in sorted order.
-                let mut v: Vec<_> = (0..len)
-                    .map(|_| {
-                        let n = thread_rng().gen::<usize>() % 10;
-                        counts[n] += 1;
-                        (n, counts[n])
-                    })
-                    .collect();
-
-                // Only sort on the first element, so an unstable sort
-                // may mix up the counts.
-                par_mergesort(&mut v, |&(a, _), &(b, _)| a.lt(&b));
-
-                // This comparison includes the count (the second item
-                // of the tuple), so elements with equal first items
-                // will need to be ordered with increasing
-                // counts... i.e. exactly asserting that this sort is
-                // stable.
-                assert!(v.windows(2).all(|w| w[0] <= w[1]));
-            }
         }
     }
 }
