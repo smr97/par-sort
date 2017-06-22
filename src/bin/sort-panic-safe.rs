@@ -75,7 +75,7 @@ macro_rules! test {
             cmp::max(1, panic_countdown / 10)
         };
 
-        // ... and then panic after each `step` version.
+        // ... and then panic after each `step` comparisons.
         loop {
             // Refresh the counters.
             VERSIONS.store(0, Relaxed);
@@ -126,7 +126,7 @@ fn main() {
         }
     }));
 
-    for &len in &[1, 2, 3, 4, 5, 10, 20, 100, 500, 3000, 20_000] {
+    for &len in &[1, 2, 3, 4, 5, 10, 20, 100, 500, 5000, 20_000] {
         for &modulus in &[5, 30, 1000, 20_000] {
             for &has_runs in &[false, true] {
                 let mut rng = thread_rng();

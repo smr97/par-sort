@@ -376,7 +376,7 @@ where
 ///
 /// Returns two indices `(a, b)` so that slices `left[..a]` and `right[..b]` come before
 /// `left[a..]` and `right[b..]`.
-fn divide_merge<T, F>(left: &[T], right: &[T], is_less: &F) -> (usize, usize)
+fn split_for_merge<T, F>(left: &[T], right: &[T], is_less: &F) -> (usize, usize)
 where
     F: Fn(&T, &T) -> bool,
 {
@@ -386,7 +386,7 @@ where
     if left_len >= right_len {
         let left_mid = left_len / 2;
 
-        // Find the first element in `right` that is greater or equal to `left[left_mid]`.
+        // Find the first element in `right` that is greater than or equal to `left[left_mid]`.
         let mut a = 0;
         let mut b = right_len;
         while a < b {
@@ -431,7 +431,7 @@ where
     T: Send,
     F: Fn(&T, &T) -> bool + Sync,
 {
-    // Slices whose length sum up to this value are merged sequentially.
+    // Slices whose lengths sum up to this value are merged sequentially.
     const MAX_SEQUENTIAL: usize = 5000;
 
     let left_len = left.len();
@@ -465,9 +465,9 @@ where
             ptr::copy_nonoverlapping(to_copy, get_and_increment(&mut s.dest), 1);
         }
     } else {
-        // Function `divide_merge` might panic. If that happens, `s` will get destructed and copy
+        // Function `split_for_merge` might panic. If that happens, `s` will get destructed and copy
         // the whole `left` and `right` into `dest`.
-        let (left_mid, right_mid) = divide_merge(left, right, is_less);
+        let (left_mid, right_mid) = split_for_merge(left, right, is_less);
         let (left_l, left_r) = left.split_at_mut(left_mid);
         let (right_l, right_r) = right.split_at_mut(right_mid);
 
@@ -488,7 +488,7 @@ where
     // all at once.
 
     // When dropped, copies arrays `left_start..left_end` and `right_start..right_end` into `dest`,
-    // in this order.
+    // in that order.
     struct State<T> {
         left_start: *mut T,
         left_end: *mut T,
@@ -513,12 +513,11 @@ where
     }
 }
 
-/// Recursively merges pre-sorted chunks in `v`.
+/// Recursively merges pre-sorted chunks inside `v`.
 ///
 /// Chunks of `v` are stored in `chunks` as intervals (inclusive left and exclusive right bound).
 /// Argument `buf` is an auxilliary buffer that will be used during the procedure.
-/// If `into_buf` is true, the result of merging chunks will be stored into `buf`, otherwise it will
-/// be in `v`.
+/// If `into_buf` is true, the result will be stored into `buf`, otherwise it will be in `v`.
 ///
 /// # Safety
 ///
@@ -541,7 +540,7 @@ where
     debug_assert!(len > 0);
 
     // Base case of the algorithm.
-    // If only one chunk is remaining, there's no more work to divide and merge.
+    // If only one chunk is remaining, there's no more work to split and merge.
     if len == 1 {
         if into_buf {
             // Copy the chunk from `v` into `buf`.
@@ -559,22 +558,20 @@ where
     let (_, end) = chunks[len - 1];
     let (left, right) = chunks.split_at(len / 2);
 
-    // Recursive calls flip `into_buf` on each level of recursion. This way `par_merge` merges
-    // chunks from `buf` into `v` on the first level, from `v` into `buf` on the second level etc.
-    //
-    // After recursive calls finish we'll need to merge chunks `(start, mid)` and `(mid, end)` from
-    // `src` into `dest`. If the current invocation needs to store the result into `buf`, we'll
+    // After recursive calls finish we'll have to merge chunks `(start, mid)` and `(mid, end)` from
+    // `src` into `dest`. If the current invocation has to store the result into `buf`, we'll
     // merge chunks from `v` into `buf`, and viceversa.
     //
-    // If we didn't filp the source and destination on each level, we'd have to copy all chunks
-    // from `buf` back into `v` every time after merging, and that'd negatively affect performance.
+    // Recursive calls flip `into_buf` at each level of recursion. More concretely, `par_merge`
+    // merges chunks from `buf` into `v` at the first level, from `v` into `buf` at the second
+    // level etc.
     let (src, dest) = if into_buf { (v, buf) } else { (buf, v) };
 
     // Panic safety:
     //
     // If `is_less` panics at any point during the recursive calls, the destructor of `guard` will
     // be executed, thus copying everything from `src` into `dest`. This way we ensure that all
-    // chunks are in fact copied into `dest`, even if the merge process didn't finish.
+    // chunks are in fact copied into `dest`, even if the merge process doesn't finish.
     let guard = CopyOnDrop {
         src: src.offset(start as isize),
         dest: dest.offset(start as isize),
@@ -589,7 +586,7 @@ where
         || recurse(v as *mut T, buf as *mut T, right, !into_buf, is_less),
     );
 
-    // Everything went all right: recursive calls didn't panic.
+    // Everything went all right - recursive calls didn't panic.
     // Forget the guard in order to prevent its destructor from running.
     mem::forget(guard);
 
@@ -602,7 +599,7 @@ where
 /// Sorts `v` using merge sort in parallel.
 ///
 /// The algorithm is stable, allocates memory, and `O(n log n)` worst-case.
-/// The allocated temporary buffer is of the same length as `v`.
+/// The allocated temporary buffer is of the same length as is `v`.
 pub fn par_mergesort<T, F>(v: &mut [T], is_less: F)
 where
     T: Send,
@@ -667,7 +664,7 @@ where
             .peekable()
     };
 
-    // Now concatenate adjacent chunks that are descending or were already sorted from the start.
+    // Now attempt to concatenate adjacent chunks that were left intact.
     let mut chunks = Vec::with_capacity(iter.len());
 
     while let Some((a, mut b, res)) = iter.next() {
@@ -676,6 +673,7 @@ where
             while let Some(&(x, y, r)) = iter.peek() {
                 // If the following chunk is of the same type and can be concatenated...
                 if r == res && (r == MergesortResult::Descending) == is_less(&v[x], &v[x - 1]) {
+                    // Concatenate them.
                     b = y;
                     iter.next();
                 } else {
@@ -703,12 +701,12 @@ where
 mod tests {
     use rand::{thread_rng, Rng};
 
-    use super::divide_merge;
+    use super::split_for_merge;
 
     #[test]
-    fn test_divide_merge() {
+    fn test_split_for_merge() {
         fn check(left: &[u32], right: &[u32]) {
-            let (l, r) = divide_merge(left, right, &|&a, &b| a < b);
+            let (l, r) = split_for_merge(left, right, &|&a, &b| a < b);
             assert!(left[..l].iter().all(|&x| right[r..].iter().all(|&y| x <= y)));
             assert!(right[..r].iter().all(|&x| left[l..].iter().all(|&y| x < y)));
         }
