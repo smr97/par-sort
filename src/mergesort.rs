@@ -575,7 +575,11 @@ where
     // If `is_less` panics at any point during the recursive calls, the destructor of `guard` will
     // be executed, thus copying everything from `src` into `dest`. This way we ensure that all
     // chunks are in fact copied into `dest`, even if the merge process didn't finish.
-    let guard = CopyOnDrop { src, dest, len };
+    let guard = CopyOnDrop {
+        src: src.offset(start as isize),
+        dest: dest.offset(start as isize),
+        len: end - start,
+    };
 
     // Convert the pointers to `usize` because `*mut T` is not `Send`.
     let v = v as usize;
