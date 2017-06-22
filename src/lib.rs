@@ -1,9 +1,13 @@
+extern crate rand;
 extern crate rayon;
 
 use std::cmp::Ordering;
 
 mod mergesort;
 mod quicksort;
+
+pub use mergesort::par_mergesort;
+pub use quicksort::par_quicksort;
 
 pub trait ParallelSliceSort<T: Send> {
     fn par_sort(&mut self)
@@ -38,14 +42,14 @@ impl<T: Send> ParallelSliceSort<T> for [T] {
     where
         T: Ord
     {
-        mergesort::sort(self, |a, b| a.lt(b));
+        par_mergesort(self, |a, b| a.lt(b));
     }
 
     fn par_sort_by<F>(&mut self, compare: F)
     where
         F: Sync + Fn(&T, &T) -> Ordering
     {
-        mergesort::sort(self, |a, b| compare(a, b) == Ordering::Less);
+        par_mergesort(self, |a, b| compare(a, b) == Ordering::Less);
     }
 
     fn par_sort_by_key<B, F>(&mut self, f: F)
@@ -53,21 +57,21 @@ impl<T: Send> ParallelSliceSort<T> for [T] {
         B: Ord,
         F: Sync + Fn(&T) -> B
     {
-        mergesort::sort(self, |a, b| f(a).lt(&f(b)));
+        par_mergesort(self, |a, b| f(a).lt(&f(b)));
     }
 
     fn par_sort_unstable(&mut self)
     where
         T: Ord,
     {
-        quicksort::sort(self, |a, b| a.lt(b));
+        par_quicksort(self, |a, b| a.lt(b));
     }
 
     fn par_sort_unstable_by<F>(&mut self, compare: F)
     where
         F: Sync + Fn(&T, &T) -> Ordering,
     {
-        quicksort::sort(self, |a, b| compare(a, b) == Ordering::Less);
+        par_quicksort(self, |a, b| compare(a, b) == Ordering::Less);
     }
 
     fn par_sort_unstable_by_key<B, F>(&mut self, f: F)
@@ -75,6 +79,6 @@ impl<T: Send> ParallelSliceSort<T> for [T] {
         B: Ord,
         F: Sync + Fn(&T) -> B,
     {
-        quicksort::sort(self, |a, b| f(a).lt(&f(b)));
+        par_quicksort(self, |a, b| f(a).lt(&f(b)));
     }
 }

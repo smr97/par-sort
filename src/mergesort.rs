@@ -477,12 +477,11 @@ where
         mem::forget(s);
 
         // Convert the pointers to `usize` because `*mut T` is not `Send`.
-        let dest_left = dest as usize;
-        let dest_right = dest.offset((left_l.len() + right_l.len()) as isize) as usize;
-
+        let dest_l = dest as usize;
+        let dest_r = dest.offset((left_l.len() + right_l.len()) as isize) as usize;
         rayon::join(
-            || par_merge(left_l, right_l, dest_left as *mut T, is_less),
-            || par_merge(left_r, right_r, dest_right as *mut T, is_less),
+            || par_merge(left_l, right_l, dest_l as *mut T, is_less),
+            || par_merge(left_r, right_r, dest_r as *mut T, is_less),
         );
     }
     // Finally, `s` gets dropped if we used sequential merge, thus copying the remaining elements
@@ -596,10 +595,11 @@ where
     par_merge(src_left, src_right, dest.offset(start as isize), is_less);
 }
 
-/// Sorts `v` using merge sort, which is stable, allocates memory, and `O(n log n)` worst-case.
+/// Sorts `v` using merge sort in parallel.
 ///
-/// The algorithm allocates a temporary buffer of the same length as `v`.
-pub fn sort<T, F>(v: &mut [T], is_less: F)
+/// The algorithm is stable, allocates memory, and `O(n log n)` worst-case.
+/// The allocated temporary buffer is of the same length as `v`.
+pub fn par_mergesort<T, F>(v: &mut [T], is_less: F)
 where
     T: Send,
     F: Fn(&T, &T) -> bool + Sync,
@@ -697,34 +697,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    extern crate rand;
+    use rand::{thread_rng, Rng};
 
-    use super::divide_merge;
-    use super::sort;
-    use self::rand::{thread_rng, Rng};
-
-    #[test]
-    fn test() {
-        let mut rng = thread_rng();
-        for _ in 0..1000 {
-            let len = rng.gen::<usize>() % 10000 + 1;
-            let limit = rng.gen::<u64>() % 10000 + 1;
-
-            let mut a = rng.gen_iter::<u64>()
-                .map(|x| x % limit)
-                .take(len)
-                .enumerate()
-                .map(|(i, x)| (x, i))
-                .collect::<Vec<_>>();
-
-            let mut b = a.clone();
-
-            a.sort_by_key(|&(k, _)| k);
-            sort(&mut b, |&(x, _), &(y, _)| x.lt(&y));
-
-            assert_eq!(a, b);
-        }
-    }
+    use super::{divide_merge, par_mergesort};
 
     #[test]
     fn test_divide_merge() {
@@ -758,5 +733,87 @@ mod tests {
             right.sort();
             check(&left, &right);
         }
+    }
+
+    #[test]
+    fn test_par_mergesort() {
+        let mut rng = thread_rng();
+
+        for len in (0..25).chain(500..501) {
+            for &modulus in &[5, 10, 100] {
+                for _ in 0..100 {
+                    let mut v: Vec<_> = rng.gen_iter::<i32>()
+                        .map(|x| x % modulus)
+                        .take(len)
+                        .collect();
+
+                    // Test heapsort using `<` operator.
+                    let mut tmp = v.clone();
+                    par_mergesort(&mut tmp, |a, b| a < b);
+                    assert!(tmp.windows(2).all(|w| w[0] <= w[1]));
+
+                    // Test mergesort using `>` operator.
+                    let mut tmp = v.clone();
+                    par_mergesort(&mut tmp, |a, b| a > b);
+                    assert!(tmp.windows(2).all(|w| w[0] >= w[1]));
+                }
+            }
+        }
+
+        for &len in &[1000, 10_000, 100_000] {
+            for &modulus in &[5, 10, 100, 10_000] {
+                let mut v: Vec<_> = rng.gen_iter::<i32>()
+                    .map(|x| x % modulus)
+                    .take(len)
+                    .collect();
+
+                par_mergesort(&mut v, |a, b| a < b);
+                assert!(v.windows(2).all(|w| w[0] <= w[1]));
+            }
+        }
+
+        for &len in &[1000, 10_000, 100_000] {
+            for &modulus in &[5, 10, 1000, 50_000] {
+                let mut v: Vec<_> = rng.gen_iter::<i32>()
+                    .map(|x| x % modulus)
+                    .take(len)
+                    .collect();
+
+                v.sort();
+                v.reverse();
+
+                for _ in 0..5 {
+                    let a = rng.gen::<usize>() % len;
+                    let b = rng.gen::<usize>() % len;
+                    if a < b {
+                        v[a..b].reverse();
+                    } else {
+                        v.swap(a, b);
+                    }
+                }
+
+                par_mergesort(&mut v, |a, b| a < b);
+                assert!(v.windows(2).all(|w| w[0] <= w[1]));
+            }
+        }
+
+        // Sort using a completely random comparison function.
+        // This will reorder the elements *somehow*, but won't panic.
+        let mut v: Vec<_> = (0..100).collect();
+        par_mergesort(&mut v, |_, _| thread_rng().gen());
+        par_mergesort(&mut v, |a, b| a < b);
+
+        for i in 0..v.len() {
+            assert_eq!(v[i], i);
+        }
+
+        // Should not panic.
+        par_mergesort(&mut [0i32; 0], |a, b| *a < *b);
+        par_mergesort(&mut [(); 10], |a, b| *a < *b);
+        par_mergesort(&mut [(); 100], |a, b| *a < *b);
+
+        let mut v = [0xDEADBEEFu64];
+        par_mergesort(&mut v, |a, b| *a < *b);
+        assert!(v == [0xDEADBEEF]);
     }
 }

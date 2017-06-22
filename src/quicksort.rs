@@ -720,12 +720,10 @@ where
     }
 }
 
-/// Sorts `v` using pattern-defeating quicksort, which is unstable, in-place, and `O(n log n)`
-/// worst-case.
+/// Sorts `v` using pattern-defeating quicksort in parallel.
 ///
-/// The algorithm is based on the one invented by Orson Peters, which is published at:
-/// https://github.com/orlp/pdqsort
-pub fn sort<T, F>(v: &mut [T], is_less: F)
+/// The algorithm is unstable, in-place, and `O(n log n)` worst-case.
+pub fn par_quicksort<T, F>(v: &mut [T], is_less: F)
 where
     T: Send,
     F: Fn(&T, &T) -> bool + Sync,
@@ -739,4 +737,129 @@ where
     let limit = mem::size_of::<usize>() * 8 - v.len().leading_zeros() as usize;
 
     recurse(v, &is_less, None, limit);
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::{thread_rng, Rng};
+
+    use super::{heapsort, par_quicksort};
+
+    #[test]
+    fn test_heapsort() {
+        let mut rng = thread_rng();
+
+        for len in (0..25).chain(500..501) {
+            for &modulus in &[5, 10, 100] {
+                for _ in 0..100 {
+                    let mut v: Vec<_> = rng.gen_iter::<i32>()
+                        .map(|x| x % modulus)
+                        .take(len)
+                        .collect();
+
+                    // Test heapsort using `<` operator.
+                    let mut tmp = v.clone();
+                    heapsort(&mut tmp, &|a, b| a < b);
+                    assert!(tmp.windows(2).all(|w| w[0] <= w[1]));
+
+                    // Test heapsort using `>` operator.
+                    let mut tmp = v.clone();
+                    heapsort(&mut tmp, &|a, b| a > b);
+                    assert!(tmp.windows(2).all(|w| w[0] >= w[1]));
+                }
+            }
+        }
+
+        // Sort using a completely random comparison function.
+        // This will reorder the elements *somehow*, but won't panic.
+        let mut v: Vec<_> = (0..100).collect();
+        heapsort(&mut v, &|_, _| thread_rng().gen());
+        heapsort(&mut v, &|a, b| a < b);
+
+        for i in 0..v.len() {
+            assert_eq!(v[i], i);
+        }
+    }
+
+    #[test]
+    fn test_par_quicksort() {
+        let mut rng = thread_rng();
+
+        for len in (0..25).chain(500..501) {
+            for &modulus in &[5, 10, 100] {
+                for _ in 0..100 {
+                    let mut v: Vec<_> = rng.gen_iter::<i32>()
+                        .map(|x| x % modulus)
+                        .take(len)
+                        .collect();
+
+                    // Test heapsort using `<` operator.
+                    let mut tmp = v.clone();
+                    par_quicksort(&mut tmp, |a, b| a < b);
+                    assert!(tmp.windows(2).all(|w| w[0] <= w[1]));
+
+                    // Test quicksort using `>` operator.
+                    let mut tmp = v.clone();
+                    par_quicksort(&mut tmp, |a, b| a > b);
+                    assert!(tmp.windows(2).all(|w| w[0] >= w[1]));
+                }
+            }
+        }
+
+        for &len in &[1000, 10_000, 100_000] {
+            for &modulus in &[5, 10, 100, 10_000] {
+                let mut v: Vec<_> = rng.gen_iter::<i32>()
+                    .map(|x| x % modulus)
+                    .take(len)
+                    .collect();
+
+                par_quicksort(&mut v, |a, b| a < b);
+                assert!(v.windows(2).all(|w| w[0] <= w[1]));
+            }
+        }
+
+        for &len in &[1000, 10_000, 100_000] {
+            for &modulus in &[5, 10, 1000, 50_000] {
+                let mut v: Vec<_> = rng.gen_iter::<i32>()
+                    .map(|x| x % modulus)
+                    .take(len)
+                    .collect();
+
+                v.sort();
+                v.reverse();
+
+                for _ in 0..5 {
+                    let a = rng.gen::<usize>() % len;
+                    let b = rng.gen::<usize>() % len;
+                    if a < b {
+                        v[a..b].reverse();
+                    } else {
+                        v.swap(a, b);
+                    }
+                }
+
+                par_quicksort(&mut v, |a, b| a < b);
+                assert!(v.windows(2).all(|w| w[0] <= w[1]));
+            }
+        }
+
+        // Sort using a completely random comparison function.
+        // This will reorder the elements *somehow*, but won't panic.
+        let mut v: Vec<_> = (0..100).collect();
+        par_quicksort(&mut v, |_, _| thread_rng().gen());
+        par_quicksort(&mut v, |a, b| a < b);
+
+        for i in 0..v.len() {
+            assert_eq!(v[i], i);
+        }
+
+        // Should not panic.
+        par_quicksort(&mut [0i32; 0], |a, b| *a < *b);
+        par_quicksort(&mut [(); 10], |a, b| *a < *b);
+        par_quicksort(&mut [(); 100], |a, b| *a < *b);
+
+        let mut v = [0xDEADBEEFu64];
+        par_quicksort(&mut v, |a, b| *a < *b);
+        assert!(v == [0xDEADBEEF]);
+    }
 }
