@@ -630,7 +630,8 @@ where
 {
     // Slices of up to this length get sorted using insertion sort.
     const MAX_INSERTION: usize = 20;
-    // If both partitions are up to this length, we continue sequentially.
+    // If both partitions are up to this length, we continue sequentially. This number is as small
+    // as possible but so that the overhead of Rayon's task scheduling is still negligible.
     const MAX_SEQUENTIAL: usize = 2000;
 
     // True if the last partitioning was reasonably balanced.
@@ -742,7 +743,6 @@ where
 #[cfg(test)]
 mod tests {
     use rand::{thread_rng, Rng};
-
     use super::heapsort;
 
     #[test]

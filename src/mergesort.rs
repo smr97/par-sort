@@ -372,6 +372,11 @@ where
     MergesortResult::Sorted
 }
 
+////////////////////////////////////////////////////////////////////////////
+// Everything above this line is copied from `std::slice::sort` (with very minor tweaks).
+// Everything below this line is parallelization.
+////////////////////////////////////////////////////////////////////////////
+
 /// Splits two sorted slices so that they can be merged in parallel.
 ///
 /// Returns two indices `(a, b)` so that slices `left[..a]` and `right[..b]` come before
@@ -431,7 +436,10 @@ where
     T: Send,
     F: Fn(&T, &T) -> bool + Sync,
 {
-    // Slices whose lengths sum up to this value are merged sequentially.
+    // Slices whose lengths sum up to this value are merged sequentially. This number is slightly
+    // larger than `CHUNK_LENGTH`, and the reason is that merging is faster than merge sorting, so
+    // merging needs a bit coarser granularity in order to hide the overhead of Rayon's task
+    // scheduling.
     const MAX_SEQUENTIAL: usize = 5000;
 
     let left_len = left.len();
@@ -450,7 +458,7 @@ where
         left_end: left.as_mut_ptr().offset(left_len as isize),
         right_start: right.as_mut_ptr(),
         right_end: right.as_mut_ptr().offset(right_len as isize),
-        dest,
+        dest: dest,
     };
 
     if left_len == 0 || right_len == 0 || left_len + right_len < MAX_SEQUENTIAL {
@@ -516,7 +524,7 @@ where
 /// Recursively merges pre-sorted chunks inside `v`.
 ///
 /// Chunks of `v` are stored in `chunks` as intervals (inclusive left and exclusive right bound).
-/// Argument `buf` is an auxilliary buffer that will be used during the procedure.
+/// Argument `buf` is an auxiliary buffer that will be used during the procedure.
 /// If `into_buf` is true, the result will be stored into `buf`, otherwise it will be in `v`.
 ///
 /// # Safety
@@ -605,9 +613,11 @@ where
     T: Send,
     F: Fn(&T, &T) -> bool + Sync,
 {
-    // Slices of up to this length get sorted using insertion sort.
+    // Slices of up to this length get sorted using insertion sort in order to avoid the cost of
+    // buffer allocation.
     const MAX_INSERTION: usize = 20;
-    // The length of initial chunks.
+    // The length of initial chunks. This number is as small as possible but so that the overhead
+    // of Rayon's task scheduling is still negligible.
     const CHUNK_LENGTH: usize = 2000;
 
     // Sorting has no meaningful behavior on zero-sized types.
@@ -700,7 +710,6 @@ where
 #[cfg(test)]
 mod tests {
     use rand::{thread_rng, Rng};
-
     use super::split_for_merge;
 
     #[test]
