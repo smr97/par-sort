@@ -8,10 +8,9 @@ const int LEN = 100 * 1000 * 1000;
 
 void display(
   std::string name,
-  std::chrono::time_point<std::chrono::high_resolution_clock> start
+  std::chrono::time_point<std::chrono::high_resolution_clock> start,
+  std::chrono::time_point<std::chrono::high_resolution_clock> end
 ) {
-  auto end = std::chrono::high_resolution_clock::now();
-
   std::cout << name;
   for (auto i = name.size(); i < 30; ++i) {
     std::cout << " ";
@@ -34,31 +33,36 @@ int main() {
     init();
     auto start = std::chrono::high_resolution_clock::now();
     std::stable_sort(v.begin(), v.end());
-    display("std::stable_sort", start);
+    auto end = std::chrono::high_resolution_clock::now();
+    display("std::stable_sort", start, end);
   }
   {
     init();
     auto start = std::chrono::high_resolution_clock::now();
     std::sort(v.begin(), v.end());
-    display("std::sort", start);
+    auto end = std::chrono::high_resolution_clock::now();
+    display("std::sort", start, end);
   }
   {
     init();
     auto start = std::chrono::high_resolution_clock::now();
     __gnu_parallel::stable_sort(v.begin(), v.end());
-    display("__gnu_parallel::stable_sort", start);
+    auto end = std::chrono::high_resolution_clock::now();
+    display("__gnu_parallel::stable_sort", start, end);
   }
   {
     init();
     auto start = std::chrono::high_resolution_clock::now();
     __gnu_parallel::sort(v.begin(), v.end());
-    display("__gnu_parallel::sort", start);
+    auto end = std::chrono::high_resolution_clock::now();
+    display("__gnu_parallel::sort", start, end);
   }
   {
     init();
     auto start = std::chrono::high_resolution_clock::now();
     tbb::parallel_sort(v.begin(), v.end());
-    display("tbb::parallel_sort", start);
+    auto end = std::chrono::high_resolution_clock::now();
+    display("tbb::parallel_sort", start, end);
   }
 
   return 0;
