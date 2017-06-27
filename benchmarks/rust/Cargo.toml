@@ -5,3 +5,4 @@ authors = ["Stjepan Glavina <stjepang@gmail.com>"]
 
 [dependencies]
 par-sort = { path = "../.." }
+rand = "0.3"

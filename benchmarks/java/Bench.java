@@ -1,4 +1,5 @@
 import java.util.Arrays;
+import java.util.Random;
 
 public class Bench {
     public static void main(String[] args) {
@@ -6,8 +7,9 @@ public class Bench {
         long[] arr = new long[len];
 
         {
+            Random rnd = new Random();
             for (int i = 0; i < len; ++i) {
-                arr[i] = (long)i * i * i * 18913515181L;
+                arr[i] = rnd.nextLong();
             }
 
             long start = System.currentTimeMillis();
@@ -18,8 +20,9 @@ public class Bench {
         }
 
         {
+            Random rnd = new Random();
             for (int i = 0; i < len; ++i) {
-                arr[i] = (long)i * i * i * 18913515181L;
+                arr[i] = rnd.nextLong();
             }
 
             long start = System.currentTimeMillis();

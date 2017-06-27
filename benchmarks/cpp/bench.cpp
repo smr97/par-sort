@@ -1,5 +1,6 @@
 #include <chrono>
 #include <algorithm>
+#include <random>
 #include <iostream>
 #include <parallel/algorithm>
 #include <tbb/parallel_sort.h>
@@ -21,12 +22,14 @@ void display(
 }
 
 int main() {
-  std::vector<unsigned long long> v;
+  std::vector<uint64_t> v;
   v.resize(LEN);
 
   auto init = [&] () {
+    std::random_device device;
+    std::mt19937_64 rnd(device());
     for (int i = 0; i < LEN; ++i) {
-      v[i] = ((unsigned long long)i * i * i * 18913515181);
+      v[i] = rnd();
     }
   };
 
