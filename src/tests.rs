@@ -36,45 +36,49 @@ macro_rules! test_sort {
             // Test sort with many duplicates.
             for &len in &[1000, 10_000, 100_000] {
                 for &modulus in &[5, 10, 100, 10_000] {
-                    let mut v: Vec<_> = rng.gen_iter::<i32>()
-                        .map(|x| x % modulus)
-                        .take(len)
-                        .collect();
+                    for _ in 0..5 {
+                        let mut v: Vec<_> = rng.gen_iter::<i32>()
+                            .map(|x| x % modulus)
+                            .take(len)
+                            .collect();
 
-                    v.$f(|a, b| a.cmp(b));
-                    assert!(v.windows(2).all(|w| w[0] <= w[1]));
+                        v.$f(|a, b| a.cmp(b));
+                        assert!(v.windows(2).all(|w| w[0] <= w[1]));
+                    }
                 }
             }
 
             // Test sort with many pre-sorted runs.
             for &len in &[1000, 10_000, 100_000] {
                 for &modulus in &[5, 10, 1000, 50_000] {
-                    let mut v: Vec<_> = rng.gen_iter::<i32>()
-                        .map(|x| x % modulus)
-                        .take(len)
-                        .collect();
-
-                    v.sort();
-                    v.reverse();
-
                     for _ in 0..5 {
-                        let a = rng.gen::<usize>() % len;
-                        let b = rng.gen::<usize>() % len;
-                        if a < b {
-                            v[a..b].reverse();
-                        } else {
-                            v.swap(a, b);
-                        }
-                    }
+                        let mut v: Vec<_> = rng.gen_iter::<i32>()
+                            .map(|x| x % modulus)
+                            .take(len)
+                            .collect();
 
-                    v.$f(|a, b| a.cmp(b));
-                    assert!(v.windows(2).all(|w| w[0] <= w[1]));
+                        v.sort();
+                        v.reverse();
+
+                        for _ in 0..5 {
+                            let a = rng.gen::<usize>() % len;
+                            let b = rng.gen::<usize>() % len;
+                            if a < b {
+                                v[a..b].reverse();
+                            } else {
+                                v.swap(a, b);
+                            }
+                        }
+
+                        v.$f(|a, b| a.cmp(b));
+                        assert!(v.windows(2).all(|w| w[0] <= w[1]));
+                    }
                 }
             }
 
             // Sort using a completely random comparison function.
             // This will reorder the elements *somehow*, but won't panic.
-            let mut v: Vec<_> = (0..100).collect();
+            let mut v: Vec<usize> = (0..100).collect();
             v.$f(|_, _| *thread_rng().choose(&[Less, Equal, Greater]).unwrap());
             v.$f(|a, b| a.cmp(b));
             for i in 0..v.len() {
@@ -95,6 +99,58 @@ macro_rules! test_sort {
 
 test_sort!(par_sort_by, test_par_sort);
 test_sort!(par_sort_unstable_by, test_par_sort_unstable);
+
+#[test]
+fn cross_test_parallel_sorts() {
+    let mut rng = thread_rng();
+
+    // Test sorts with many duplicates.
+    for &len in &[1000, 10_000, 100_000] {
+        for &modulus in &[5, 10, 100, 10_000] {
+            for _ in 0..5 {
+                let mut v1: Vec<_> = rng.gen_iter::<i32>()
+                    .map(|x| x % modulus)
+                    .take(len)
+                    .collect();
+
+                let mut v2 = v1.clone();
+                v1.par_sort();
+                v2.par_sort_unstable();
+                assert!(v1 == v2);
+            }
+        }
+    }
+
+    // Test sorts with many pre-sorted runs.
+    for &len in &[1000, 10_000, 100_000] {
+        for &modulus in &[5, 10, 1000, 50_000] {
+            for _ in 0..5 {
+                let mut v1: Vec<_> = rng.gen_iter::<i32>()
+                    .map(|x| x % modulus)
+                    .take(len)
+                    .collect();
+
+                v1.sort();
+                v1.reverse();
+
+                for _ in 0..5 {
+                    let a = rng.gen::<usize>() % len;
+                    let b = rng.gen::<usize>() % len;
+                    if a < b {
+                        v1[a..b].reverse();
+                    } else {
+                        v1.swap(a, b);
+                    }
+                }
+
+                let mut v2 = v1.clone();
+                v1.par_sort();
+                v2.par_sort_unstable();
+                assert!(v1 == v2);
+            }
+        }
+    }
+}
 
 #[test]
 fn test_par_sort_stability() {
