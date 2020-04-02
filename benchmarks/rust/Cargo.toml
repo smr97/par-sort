@@ -1,8 +1,10 @@
 [package]
-name = "rust"
+name = "bench_rust"
 version = "0.1.0"
 authors = ["Stjepan Glavina <stjepang@gmail.com>"]
 
 [dependencies]
-par-sort = { path = "../.." }
-rand = "0.3"
+rayon_adaptive = {git = "https://github.com/wagnerf42/rayon-adaptive.git", branch = "lifetimes_smr"} 
+par-sort = {path = "../.."}
+rand = "*"
+rayon = "*"
