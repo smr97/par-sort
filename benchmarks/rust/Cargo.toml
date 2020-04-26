@@ -4,7 +4,8 @@ version = "0.1.0"
 authors = ["Stjepan Glavina <stjepang@gmail.com>"]
 
 [dependencies]
-rayon_adaptive = {git = "https://github.com/wagnerf42/rayon-adaptive.git", branch = "lifetimes_smr"} 
+rayon_adaptive = {git = "https://github.com/wagnerf42/rayon-adaptive.git", branch = "lifetimes_smr"}
+rayon_try_fold = {git = "https://github.com/wagnerf42/rayon_try_fold.git"}
 par-sort = {path = "../.."}
-rand = "*"
-rayon = "*"
+rayon = "1.3.0"
+rand = "0.7.3"
