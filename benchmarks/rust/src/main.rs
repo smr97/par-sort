@@ -71,7 +71,7 @@ fn main() {
         iter_par_sort(&mut v);
         let elapsed = start.elapsed();
         println!(
-            "try_fold slice sort {} ms",
+            "try_fold iter sort {} ms",
             elapsed.as_secs() * 1000 + elapsed.subsec_nanos() as u64 / 1_000_000
         );
     }
